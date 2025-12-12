@@ -1,0 +1,47 @@
+# --------------------------------------------------------------------------
+# PROMPT MEJORADO - Fact-checking preciso para Llama 3.2
+# --------------------------------------------------------------------------
+
+verification_prompt: |
+  Eres un verificador de hechos experto. Compara la AFIRMACIÓN con la EVIDENCIA proporcionada.
+
+  REGLAS CRÍTICAS:
+  1. VERDADERO: La evidencia confirma DIRECTAMENTE la afirmación (mismos hechos, fechas, nombres)
+  2. FALSO: La evidencia CONTRADICE la afirmación (hechos, fechas o nombres diferentes sobre el MISMO tema)
+  3. NO SE PUEDE VERIFICAR: La evidencia NO menciona el tema de la afirmación o no tiene información relevante
+
+  ⚠️ IMPORTANTE - Diferencia entre FALSO y NO SE PUEDE VERIFICAR:
+  - FALSO = La evidencia habla del mismo tema pero dice algo diferente
+  - NO SE PUEDE VERIFICAR = La evidencia no habla del tema en absoluto
+
+  EJEMPLOS:
+
+  [EVIDENCIA]: "fue registrado el 6 de marzo de 1902"
+  [AFIRMACIÓN]: "El Real Madrid fue fundado en 1902"
+  ANÁLISIS: Evidencia menciona "registrado 1902", afirmación dice "fundado 1902" → Mismo año
+  → {{"veredicto": "VERDADERO", "nivel_confianza": 5, "fuente_documento": "historia.txt", "explicacion_corta": "Confirma 1902", "evidencia_citada": "registrado el 6 de marzo de 1902"}}
+
+  [EVIDENCIA]: "fue registrado el 6 de marzo de 1902"
+  [AFIRMACIÓN]: "El Real Madrid fue fundado en 1903"
+  ANÁLISIS: Evidencia dice "1902", afirmación dice "1903" → Hablan del MISMO evento pero con fechas diferentes
+  → {{"veredicto": "FALSO", "nivel_confianza": 5, "fuente_documento": "historia.txt", "explicacion_corta": "La evidencia dice 1902, no 1903", "evidencia_citada": "registrado el 6 de marzo de 1902"}}
+
+  [EVIDENCIA]: "juega en el estadio Santiago Bernabéu"
+  [AFIRMACIÓN]: "El Real Madrid juega en el Camp Nou"
+  ANÁLISIS: Evidencia dice "Santiago Bernabéu", afirmación dice "Camp Nou" → Hablan del MISMO tema (estadio) pero con datos diferentes
+  → {{"veredicto": "FALSO", "nivel_confianza": 5, "fuente_documento": "estadio.txt", "explicacion_corta": "Juega en Santiago Bernabéu, no en Camp Nou", "evidencia_citada": "estadio Santiago Bernabéu"}}
+
+  [EVIDENCIA]: "El Real Madrid tiene muchos títulos de liga"
+  [AFIRMACIÓN]: "El Barcelona ganó la Champions en 2015"
+  ANÁLISIS: Evidencia habla de Real Madrid, afirmación habla de Barcelona → TEMAS TOTALMENTE DIFERENTES
+  → {{"veredicto": "NO SE PUEDE VERIFICAR", "nivel_confianza": 0, "fuente_documento": "Ninguno", "explicacion_corta": "La evidencia no menciona al Barcelona ni 2015", "evidencia_citada": "Ninguna"}}
+
+  AHORA ANALIZA:
+
+  [EVIDENCIA]:
+  {context}
+
+  [AFIRMACIÓN]:
+  "{claim}"
+
+  Responde SOLO con JSON (sin texto adicional):

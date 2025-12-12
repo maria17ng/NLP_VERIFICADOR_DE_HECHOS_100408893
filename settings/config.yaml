@@ -1,0 +1,203 @@
+# ============================================================================
+# CONFIGURACIÓN DEL SISTEMA DE VERIFICACIÓN DE HECHOS
+# ============================================================================
+
+# --- RUTAS ---
+paths:
+  data_raw: "data/raw"
+  vector_store: "data/vector_store"
+  prompts: "data/prompts/prompts.yaml"
+  lid_model: "lid.176.ftz"
+  logs: "logs"
+  evaluations: "evaluations"
+
+# --- MODELOS ---
+models:
+  # Modelo de Language Model (Ollama)
+  llm:
+    name: "llama3.2"
+    temperature: 0.1  # Bajo para respuestas consistentes y menos creativas
+    format: "json"
+    keep_alive: "5m"
+    # Para usar modelos de UC3M, descomentar:
+    # base_url: "https://yiyuan.tsc.uc3m.es"
+    # api_key: "sk-af55e7023913527f0d96c038eec2ef2d"
+
+  # OpenAI
+  openai:
+    enabled: true
+    api_key: os.getenv("OPENAI_KEY")
+    temperature: 0.3
+    max_tokens: 800
+
+
+    # Modelo de Embeddings
+  embeddings:
+    name: "BAAI/bge-m3"
+    # UPGRADE: Mejor modelo multilingüe (1024 dim, híbrido denso+sparse)
+    # Benchmarks: +10-15% mejor Hit Rate vs paraphrase-multilingual-MiniLM
+    # Ventajas: No requiere trust_remote_code, mejor compatibilidad
+    # Alternativas probadas:
+    # - "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" (ANTIGUO - 384 dim)
+    # - "Alibaba-NLP/gte-multilingual-base" (768 dim, requiere trust_remote_code)
+    # - "intfloat/multilingual-e5-large" (1024 dim, más lento)
+
+  # Reranker (Cross-Encoder)
+  reranker:
+    name: "BAAI/bge-reranker-v2-m3"
+    # UPGRADE: Mejor reranker multilingüe (soporta 100+ idiomas)
+    # Benchmarks: +5-10% mejor MRR vs mmarco-mMiniLMv2
+    # Alternativas probadas:
+    # - "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1" (ANTIGUO)
+    # - "BAAI/bge-reranker-large" (solo inglés, mejor performance)
+    # - "BAAI/bge-reranker-base" (más rápido, menor accuracy)
+
+
+# --- PARÁMETROS RAG ---
+rag:
+  # Búsqueda vectorial
+  similarity_search:
+    k: 80  # Documentos iniciales a recuperar
+
+  # Reranking
+  reranking:
+    top_k: 5  # Documentos finales tras reranking
+
+  # Chunking (división de documentos)
+  chunking:
+    # Estrategia: 'basic', 'semantic', 'hybrid', 'section_aware'
+    strategy: "semantic"
+    chunk_size: 1000
+    chunk_overlap: 200
+    add_start_index: true
+
+    # Parámetros para chunking semántico
+    semantic:
+      respect_sentences: true  # Respetar límites de oraciones
+      min_chunk_size: 100
+      max_chunk_size: 2000
+
+    # Parámetros para chunking híbrido
+    hybrid:
+      small_chunk_size: 512
+      large_chunk_size: 1500
+      chunk_overlap: 100
+
+  # Preprocesamiento de documentos
+  preprocessing:
+    enabled: true
+    remove_urls: true
+    remove_emails: true
+    normalize_whitespace: true
+    fix_encoding: true
+    min_paragraph_length: 50
+
+    # Preprocesamiento específico para Wikipedia
+    wikipedia_mode: true  # Eliminar secciones estándar de Wikipedia
+
+  # Extracción de metadatos
+  metadata_extraction:
+    enabled: true
+    extract_dates: true
+    extract_entities: true  # Requiere spaCy
+    classify_content: true
+    extract_keywords: true
+
+  # HyDE (Hypothetical Document Embeddings)
+  hyde:
+    enabled: true
+    num_questions: 3  # Preguntas a generar por chunk
+    create_question_docs: true  # Crear documentos separados para preguntas
+    min_chunk_length: 100  # Longitud mínima para generar preguntas
+
+  # Topic Modeling con Gensim
+  topic_modeling:
+    enabled: true
+    num_topics: 10
+    passes: 10
+
+  # Recuperación Avanzada (AdvancedRetriever)
+  advanced_retrieval:
+    # Filtrado por metadatos
+    use_metadata_filter: true
+    metadata_boost: 0.3  # Boost adicional para docs con metadatos coincidentes
+
+    # Búsqueda híbrida
+    use_hybrid_search: true
+    keyword_weight: 0.25  # Peso de keyword matching (0-1), resto es semántico
+
+    # Reranking (usa configuración de reranking.top_k para final)
+    rerank_top_k: 40  # Documentos a reranquear (antes de diversidad) - AUMENTADO
+
+    # Diversificación de fuentes
+    use_diversity: true
+    max_chunks_per_source: 3  # Máximo chunks del mismo documento fuente - AUMENTADO
+    diversity_penalty: 0.15  # Penalización por repetición de fuente
+
+    # Thresholds de relevancia (REDUCIDOS para permitir más documentos)
+    min_relevance_score: 0.20  # Score mínimo para incluir documento (0-1) - MUY PERMISIVO
+    min_rerank_score: -6.0  # Score mínimo del reranker (depende del modelo) - MUY PERMISIVO
+
+# --- MULTILINGÜISMO ---
+language:
+  default_input: "es"
+  default_output: "es"
+  translation_confidence_threshold: 0.6  # Umbral para advertir de traducciones de baja calidad
+  supported_languages:
+    - es
+    - en
+    - fr
+    - de
+    - it
+    - pt
+
+# --- CACHÉ ---
+cache:
+  enabled: true
+  max_size: 1000  # Número máximo de consultas en caché
+
+# --- LOGGING ---
+logging:
+  level: "DEBUG"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_enabled: true
+  console_enabled: true
+
+# --- EVALUACIÓN ---
+evaluation:
+  metrics:
+    - "factscore"
+    - "bertscore"
+    - "recall@k"
+
+  # Dataset de evaluación
+  test_dataset_path: "data/evaluation/test_set.json"
+
+  # Configuración de métricas
+  bertscore:
+    model: "microsoft/deberta-xlarge-mnli"
+    lang: "es"
+
+  recall:
+    k_values: [1, 3, 5]
+
+# --- OPTIMIZACIÓN ---
+optimization:
+  # Parámetros para optimización con DSPy (si se implementa)
+  max_bootstrapped_demos: 4
+  max_labeled_demos: 16
+  num_candidate_programs: 2
+  max_rounds: 2
+
+# --- WIKIPEDIA ---
+wikipedia:
+  language: "es"
+  user_agent: "ProyectoNLP_UC3M_FactChecker (estudiante@uc3m.es)"
+  extract_format: "WIKI"
+
+  # Temas por defecto para descargar
+  default_topics:
+    - "Real Madrid Club de Fútbol"
+    - "Cambio climático"
+    - "Inteligencia artificial"
+    - "COVID-19"

@@ -1,0 +1,888 @@
+import time
+import os
+import hashlib
+from typing import Dict, List, Any, Optional, Tuple
+
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_ollama import ChatOllama
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from sentence_transformers import CrossEncoder
+
+# Importaciones locales
+from language import ProcesadorMultilingue
+from utils.utils import ConfigManager, setup_logger, load_prompts
+from retriever import AdvancedRetriever, RetrievalConfig
+
+
+class FactChecker:
+    """
+    Verificador de hechos basado en RAG con soporte multilingüe.
+
+    Esta clase implementa un sistema completo de verificación que:
+    1. Detecta el idioma de entrada y traduce si es necesario
+    2. Recupera evidencia relevante de una base de datos vectorial
+    3. Usa un LLM para determinar la veracidad
+    4. Retorna respuestas en el idioma original del usuario
+    5. Mantiene caché de consultas para optimización
+
+    Attributes:
+        config: Gestor de configuración del sistema
+        logger: Logger para registro de eventos
+        prompts: Plantillas de prompts para el LLM
+        linguist: Procesador multilingüe para traducción
+        cache: Diccionario para almacenar consultas previas
+        embeddings: Modelo de embeddings para búsqueda semántica
+        vector_db: Base de datos vectorial (ChromaDB)
+        reranker: Modelo de reranking para mejorar recuperación
+        advanced_retriever: Pipeline avanzado de recuperación (nuevo)
+        llm: Modelo de lenguaje para generación
+        chain: Cadena de procesamiento LangChain
+    """
+
+    def __init__(self, config_path: str = "config.yaml"):
+        """
+        Inicializa el sistema de verificación de hechos.
+
+        Args:
+            config_path: Ruta al archivo de configuración YAML
+
+        Raises:
+            FileNotFoundError: Si no se encuentran archivos de configuración
+            Exception: Si falla la carga de modelos
+        """
+        # Configuración y logging
+        self.config = ConfigManager(config_path)
+        self.logger = setup_logger(
+            name="FactChecker",
+            level=self.config.get('logging.level', 'INFO'),
+            log_file=os.path.join(
+                self.config.get_path('logs'),
+                'fact_checker.log'
+            ),
+            console=self.config.get('logging.console_enabled', True)
+        )
+
+        self.logger.info("=" * 70)
+        self.logger.info("Iniciando Sistema de Verificación de Hechos")
+        self.logger.info("=" * 70)
+
+        # Cargar prompts
+        self._load_prompts()
+
+        # Inicializar componentes
+        self._init_language_processor()
+        self._init_cache()
+        self._init_embeddings()
+        self._init_vector_db()
+        self._init_reranker()
+        self._init_advanced_retriever()
+        self._init_llm()
+
+        self.logger.info("✅ Sistema inicializado correctamente")
+        self.logger.info("=" * 70)
+
+    def _load_prompts(self) -> None:
+        """Carga las plantillas de prompts desde archivo YAML."""
+        try:
+            prompts_path = self.config.get_path('prompts')
+            self.prompts = load_prompts(prompts_path)
+            self.logger.info(f"Prompts cargados desde: {prompts_path}")
+        except FileNotFoundError as e:
+            self.logger.error(f"❌ Error cargando prompts: {e}")
+            raise
+
+    def _init_language_processor(self) -> None:
+        """Inicializa el procesador multilingüe."""
+        try:
+            lid_model_path = self.config.get_path('lid_model')
+            self.linguist = ProcesadorMultilingue(model_path=lid_model_path)
+            self.logger.info("Procesador multilingüe inicializado")
+        except Exception as e:
+            self.logger.warning(f"⚠️  Error inicializando procesador de idiomas: {e}")
+            self.linguist = None
+
+    def _init_cache(self) -> None:
+        """Inicializa el sistema de caché."""
+        if self.config.get('cache.enabled', True):
+            self.cache = {}
+            self.cache_max_size = self.config.get('cache.max_size', 1000)
+            self.logger.info(f"Caché habilitado (tamaño máx: {self.cache_max_size})")
+        else:
+            self.cache = None
+            self.logger.info("Caché deshabilitado")
+
+    def _init_embeddings(self) -> None:
+        """Inicializa el modelo de embeddings."""
+        try:
+            model_name = self.config.get('models.embeddings.name')
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs={'trust_remote_code': True}  # Soporte para modelos con código personalizado
+            )
+            self.logger.info(f"Embeddings cargados: {model_name}")
+        except Exception as e:
+            self.logger.error(f"❌ Error cargando embeddings: {e}")
+            raise
+
+    def _init_vector_db(self) -> None:
+        """Inicializa la conexión a la base de datos vectorial."""
+        try:
+            db_path = self.config.get_path('vector_store')
+
+            if os.path.exists(db_path):
+                self.vector_db = Chroma(
+                    persist_directory=db_path,
+                    embedding_function=self.embeddings
+                )
+                # Obtener número de documentos
+                collection = self.vector_db._collection
+                doc_count = collection.count()
+                self.logger.info(f"✅ Base de datos vectorial conectada: {db_path}")
+                self.logger.info(f"\tDocumentos en BD: {doc_count}")
+            else:
+                self.vector_db = None
+                self.logger.warning(f"⚠️  No se encontró la base de datos vectorial en: {db_path}")
+                self.logger.warning("   Por favor, ejecuta ingest_data.py primero")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error conectando a la base de datos: {e}")
+            self.vector_db = None
+
+    def _init_reranker(self) -> None:
+        """Inicializa el modelo de reranking."""
+        try:
+            model_name = self.config.get('models.reranker.name')
+            self.reranker = CrossEncoder(model_name)
+            self.logger.info(f"Reranker cargado: {model_name}")
+        except Exception as e:
+            self.logger.warning(f"⚠️  Error cargando reranker: {e}")
+            self.reranker = None
+
+    def _init_advanced_retriever(self) -> None:
+        """Inicializa el pipeline avanzado de recuperación."""
+        if not self.vector_db:
+            self.logger.warning("⚠️  No se puede inicializar AdvancedRetriever sin vector_db")
+            self.advanced_retriever = None
+            return
+
+        try:
+            # Configuración del retriever desde config.yaml
+            rag_config = self.config.get_rag_config()
+
+            retrieval_config = RetrievalConfig(
+                k_initial=rag_config.get('similarity_search', {}).get('k', 50),
+                use_metadata_filter=rag_config.get('advanced_retrieval', {}).get('use_metadata_filter', True),
+                metadata_boost=rag_config.get('advanced_retrieval', {}).get('metadata_boost', 0.2),
+                use_hybrid_search=rag_config.get('advanced_retrieval', {}).get('use_hybrid_search', True),
+                keyword_weight=rag_config.get('advanced_retrieval', {}).get('keyword_weight', 0.3),
+                use_reranker=self.reranker is not None,
+                rerank_top_k=rag_config.get('advanced_retrieval', {}).get('rerank_top_k', 20),
+                use_diversity=rag_config.get('advanced_retrieval', {}).get('use_diversity', True),
+                max_chunks_per_source=rag_config.get('advanced_retrieval', {}).get('max_chunks_per_source', 3),
+                diversity_penalty=rag_config.get('advanced_retrieval', {}).get('diversity_penalty', 0.1),
+                min_relevance_score=rag_config.get('advanced_retrieval', {}).get('min_relevance_score', 0.3),
+                min_rerank_score=rag_config.get('advanced_retrieval', {}).get('min_rerank_score', -5.0),
+                final_top_k=rag_config.get('reranking', {}).get('top_k', 5)
+            )
+
+            self.advanced_retriever = AdvancedRetriever(
+                vector_db=self.vector_db,
+                reranker=self.reranker,
+                config=retrieval_config
+            )
+
+            self.logger.info("Pipeline avanzado de recuperación inicializado")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error inicializando AdvancedRetriever: {e}")
+            self.advanced_retriever = None
+
+    def _init_llm(self) -> None:
+        """Inicializa el modelo de lenguaje y la cadena de procesamiento."""
+        try:
+            llm_config = self.config.get_model_config('llm')
+
+            # Configurar parámetros del LLM
+            llm_params = {
+                'model': llm_config.get('name', 'llama3.2'),
+                'temperature': llm_config.get('temperature', 0.1),
+                'format': llm_config.get('format', 'json'),
+                'keep_alive': llm_config.get('keep_alive', '5m')
+            }
+
+            # Si hay URL base y API key (para UC3M)
+            if 'base_url' in llm_config:
+                llm_params['base_url'] = llm_config['base_url']
+            if 'api_key' in llm_config:
+                llm_params['api_key'] = llm_config['api_key']
+
+            self.llm = ChatOllama(**llm_params)
+
+            # Crear cadena de procesamiento
+            self.chain = (
+                ChatPromptTemplate.from_template(
+                    self.prompts["verification_prompt"]
+                )
+                | self.llm
+                | JsonOutputParser()
+            )
+
+            self.logger.info(f"LLM inicializado: {llm_params['model']}")
+            self.logger.info(f"\tTemperatura: {llm_params['temperature']}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error inicializando LLM: {e}")
+            raise
+
+    def retrieve_context(self, query: str) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Recupera evidencia relevante de la base de datos vectorial.
+
+        Este método usa el pipeline avanzado de recuperación:
+        1. Búsqueda vectorial inicial (k documentos)
+        2. Filtrado por metadatos enriquecidos
+        3. Búsqueda híbrida (semántica + keywords)
+        4. Reranking con cross-encoder
+        5. Diversificación de fuentes
+        6. Aplicación de thresholds de relevancia
+
+        Args:
+            query: Consulta para búsqueda de evidencia
+
+        Returns:
+            Tupla con:
+            - context: String formateado con evidencia y citaciones
+            - metadata: Lista de metadatos de documentos recuperados
+        """
+        if not self.vector_db:
+            self.logger.warning("No hay base de datos vectorial disponible")
+            return "", []
+
+        # Usar AdvancedRetriever si está disponible
+        if self.advanced_retriever:
+            try:
+                self.logger.info("Usando pipeline avanzado de recuperacion")
+                context, metadata_list = self.advanced_retriever.retrieve_with_context(query)
+                self.logger.debug(f"Contexto construido con {len(metadata_list)} fragmentos (pipeline avanzado)")
+
+                if metadata_list:
+                    self.logger.debug("Documentos recuperados:")
+                    for i, meta in enumerate(metadata_list[:5], 1):
+                        filename = meta.get("filename", "Unknown")
+                        citation = meta.get("citation", "")
+                        self.logger.debug(f"\t {i}.{filename} {citation}")
+                return context, metadata_list
+            except Exception as e:
+                self.logger.error(f"❌ Error en AdvancedRetriever, usando fallback: {e}")
+                # Continuar con método básico como fallback
+                import traceback
+                traceback.print_exception(e)
+
+        # === FALLBACK: Método básico original ===
+        self.logger.warning("⚠️  Usando pipeline de recuperación básico (fallback)")
+
+        # Configuración RAG
+        rag_config = self.config.get_rag_config()
+        k_initial = rag_config.get('similarity_search', {}).get('k', 50)
+        top_k_rerank = rag_config.get('reranking', {}).get('top_k', 5)
+
+        # 1. Búsqueda vectorial inicial
+        self.logger.debug(f"Buscando documentos similares (k={k_initial})")
+        docs = self.vector_db.similarity_search(query, k=k_initial)
+
+        if not docs:
+            self.logger.warning("No se encontraron documentos relevantes")
+            return "", []
+
+        self.logger.debug(f"\tEncontrados {len(docs)} documentos iniciales")
+
+        # 2. Reranking (si está disponible)
+        if self.reranker:
+            self.logger.debug("Aplicando reranking")
+            pairs = [[query, doc.page_content] for doc in docs]
+            scores = self.reranker.predict(pairs)
+            scored_docs = sorted(
+                zip(docs, scores),
+                key=lambda x: x[1],
+                reverse=True
+            )
+            top_docs = [doc for doc, score in scored_docs[:top_k_rerank]]
+            self.logger.debug(
+                f"\tTop {top_k_rerank} documentos tras reranking"
+            )
+        else:
+            top_docs = docs[:top_k_rerank]
+
+        # 3. Construcción del contexto con citaciones
+        context_parts = []
+        metadata_list = []
+
+        for doc in top_docs:
+            filename = os.path.basename(doc.metadata.get("source", "Desconocido"))
+
+            # Citación granular
+            citation = self._build_citation(doc.metadata)
+
+            header = f"--- DOCUMENTO: {filename}{citation} ---"
+            clean_content = " ".join(doc.page_content.split())
+
+            context_parts.append(f"{header}\n{clean_content}\n")
+            metadata_list.append({
+                'filename': filename,
+                'citation': citation,
+                'metadata': doc.metadata
+            })
+
+        context = "\n".join(context_parts)
+        self.logger.debug(f"Contexto construido con {len(top_docs)} fragmentos")
+
+        return context, metadata_list
+
+    @staticmethod
+    def _build_citation(metadata: Dict[str, Any]) -> str:
+        """
+        Construye una citación precisa basada en los metadatos del documento.
+
+        Args:
+            metadata: Metadatos del documento
+
+        Returns:
+            String con la citación formateada
+        """
+        citation = ""
+
+        # Si es PDF (tiene número de página)
+        if "page" in metadata:
+            page_num = metadata['page'] + 1  # PyPDF usa índice 0
+            citation = f" (Pág. {page_num})"
+
+        # Si es TXT con chunks (secciones)
+        elif "chunk_id" in metadata:
+            chunk_id = metadata['chunk_id']
+            total_chunks = metadata.get('total_chunks_in_file', '?')
+            citation = f" (Sec. {chunk_id}/{total_chunks})"
+
+        return citation
+
+    @staticmethod
+    def _calculate_confidence(verdict: str, context: str, metadata_list: List[Dict[str, Any]]) -> int:
+        """
+        Calcula un nivel de confianza basado en la evidencia recuperada.
+
+        El nivel de confianza se basa en:
+        - Número de fuentes que respaldan el veredicto
+        - Longitud y calidad del contexto
+        - Coherencia de la evidencia
+
+        Args:
+            verdict: Veredicto del sistema (VERDADERO, FALSO, etc.)
+            context: Contexto recuperado
+            metadata_list: Metadatos de documentos recuperados
+
+        Returns:
+            Nivel de confianza de 0 a 5
+        """
+        if verdict == "NO SE PUEDE VERIFICAR" or not context:
+            return 0
+
+        # Factores que influyen en la confianza
+        num_sources = len(metadata_list)
+        context_length = len(context)
+
+        # Heurística simple
+        confidence = 3  # Base
+
+        if num_sources >= 3:
+            confidence += 1
+        if context_length > 2000:
+            confidence += 1
+
+        return min(confidence, 5)
+
+    @staticmethod
+    def _reduce_context(claim: str, context: str, max_sentences: int = 10) -> str:
+        """
+        Reduce el contexto a las frases más ancla para el claim.
+
+        Criterios genéricos (no dependientes de dominio):
+        - Coincidencia de entidades del claim (palabras capitalizadas de 2+ términos o tokens significativos)
+        - Coincidencia de verbo/acción común (fundó/creó/ganó/...)
+        - Presencia de números de 4 dígitos (años)
+
+        Args:
+            claim: Afirmación del usuario (en español preferentemente)
+            context: Contexto completo concatenado de múltiples documentos
+            max_sentences: Máximo de frases a retornar
+
+        Returns:
+            Subconjunto de frases relevantes concatenadas, preservando encabezados de documento
+        """
+        import re
+
+        if not context:
+            return context
+
+        # Extraer entidades simples del claim (palabras capitalizadas compuestas o tokens > 3 chars)
+        entities = set()
+        entities.update(re.findall(r"\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)\b", claim))
+        # Añadir keywords en minúscula significativas del claim
+        entities.update([w for w in re.findall(r"\b\w{4,}\b", claim.lower()) if not w.isdigit()])
+
+        # Verbos/acciones comunes en verificación de hechos (genérico en español)
+        action_terms = {
+            'fundado', 'fundación', 'creado', 'creación', 'establecido', 'registrado',
+            'ganó', 'ganar', 'victoria', 'campeón', 'título', 'obtuvo', 'logró', 'consiguió',
+            'nació', 'muerte', 'falleció', 'es', 'fue', 'fueron', 'son'
+        }
+
+        # Dividir en bloques por documento para preservar encabezados
+        blocks = re.split(r"(--- DOCUMENTO\s+\d+: .*?---)", context)
+        reduced_parts: List[str] = []
+        selected_count = 0
+
+        def score_sentence(s: str) -> int:
+            s_low = s.lower()
+            score = 0
+            # Entidades/keywords
+            score += sum(1 for e in entities if e and e.lower() in s_low)
+            # Verbos/acciones
+            score += sum(1 for a in action_terms if a in s_low)
+            # Años
+            if re.search(r"\b(1[89]\d{2}|20\d{2})\b", s):
+                score += 2
+            return score
+
+        for i in range(0, len(blocks), 2):
+            header = blocks[i]
+            body = blocks[i + 1] if i + 1 < len(blocks) else ''
+            if header and header.strip().startswith('--- DOCUMENTO'):
+                reduced_parts.append(header.strip())
+                continue
+
+            text = header if header else body
+            if not text or text.strip().startswith('--- DOCUMENTO'):
+                continue
+
+            # Dividir a oraciones de forma sencilla
+            sentences = re.split(r"(?<=[\.!?])\s+", text)
+            # Puntuar y seleccionar top
+            scored = [(s, score_sentence(s)) for s in sentences if len(s.strip()) > 20]
+            scored.sort(key=lambda x: x[1], reverse=True)
+
+            for s, sc in scored:
+                if sc <= 0:
+                    continue
+                reduced_parts.append(s.strip())
+                selected_count += 1
+                if selected_count >= max_sentences:
+                    break
+            if selected_count >= max_sentences:
+                break
+
+        # Si no se seleccionó nada, devolver primeras frases razonables
+        if selected_count == 0:
+            sentences = re.split(r"(?<=[\.!?])\s+", context)
+            fallback = [s.strip() for s in sentences if len(s.strip()) > 20][:max_sentences]
+            return "\n".join(fallback)
+
+        return "\n".join(reduced_parts)
+
+    def verify(self, claim_usuario: str) -> Dict[str, Any]:
+        """
+        Verifica la veracidad de una afirmación.
+
+        Este es el método principal del sistema. Proceso completo:
+        1. Detecta idioma y traduce a español si es necesario
+        2. Verifica caché para consultas repetidas
+        3. Recupera evidencia de la base de datos
+        4. Evalúa con el LLM
+        5. Traduce respuesta al idioma original
+        6. Retorna resultado con métricas
+
+        Args:
+            claim_usuario: Afirmación a verificar (en cualquier idioma)
+
+        Returns:
+            Diccionario con:
+            - veredicto: VERDADERO, FALSO, o NO SE PUEDE VERIFICAR
+            - nivel_confianza: 0-5
+            - fuente_documento: Archivo(s) que respaldan el veredicto
+            - explicacion_corta: Justificación del veredicto
+            - evidencia_citada: Fragmento relevante de la evidencia
+            - tiempo_procesamiento: Tiempo total en segundos
+            - origen: LLM o CACHÉ
+            - idioma_respuesta: Idioma de la respuesta
+            - calidad_traduccion: % de confianza en la traducción
+        """
+        start_time = time.time()
+        self.logger.info("=" * 70)
+        self.logger.info(f"Nueva verificación: '{claim_usuario[:100]}...'")
+
+        # --- PASO 1: PROCESAMIENTO DE IDIOMA ---
+        claim_es, idioma_orig, calidad = self._process_input_language(
+            claim_usuario
+        )
+
+        # --- PASO 2: VERIFICAR CACHÉ ---
+        claim_hash = self._get_cache_key(claim_es)
+        cached_result = self._check_cache(claim_hash)
+
+        if cached_result:
+            result = cached_result
+            origen = "CACHÉ"
+            self.logger.info("Resultado obtenido de caché")
+        else:
+            # --- PASO 3: RECUPERAR EVIDENCIA ---
+            self.logger.debug(f"Buscando evidencia para: {claim_es}")
+            context, metadata_list = self.retrieve_context(claim_es)
+
+            if context:
+                context_preview = context[:500].replace('\n', ' ')
+                self.logger.debug(f"Contexto recuperado: {context_preview}")
+                self.logger.debug(f"Recuperados {len(metadata_list)} fragmentos de evidencia")
+            else:
+                self.logger.warning(f"⚠️ No se recuperó ningún contexto")
+
+            # --- PASO 4: EVALUAR CON LLM ---
+            result = self._evaluate_claim(
+                claim_es,
+                claim_usuario,
+                context,
+                calidad,
+                metadata_list
+            )
+
+            # --- PASO 5: GUARDAR EN CACHÉ ---
+            self._save_to_cache(claim_hash, result)
+            origen = "LLM"
+
+        # --- PASO 6: TRADUCIR RESPUESTA ---
+        final_result = self._translate_response(result, idioma_orig)
+
+        # --- PASO 7: AÑADIR MÉTRICAS ---
+        tiempo_total = round(time.time() - start_time, 3)
+        final_result.update({
+            "tiempo_procesamiento": f"{tiempo_total}s",
+            "origen": origen,
+            "calidad_traduccion": f"{int(calidad*100)}%",
+            "idioma_respuesta": idioma_orig
+        })
+
+        self.logger.info(f"✅ Verificación completada en {tiempo_total}s")
+        self.logger.info(f"\tVeredicto: {final_result.get('veredicto')}")
+        self.logger.info(f"\tConfianza: {final_result.get('nivel_confianza')}/5")
+        self.logger.info("=" * 70)
+
+        return final_result
+
+    def _process_input_language(self, claim_usuario: str) -> Tuple[str, str, float]:
+        """
+        Procesa el idioma de entrada y traduce si es necesario.
+
+        Args:
+            claim_usuario: Afirmación original del usuario
+
+        Returns:
+            Tupla con (claim_en_español, idioma_original, calidad_traducción)
+        """
+        if self.linguist:
+            claim_es, idioma_orig, calidad = self.linguist.procesar_entrada(
+                claim_usuario
+            )
+            self.logger.info(f"Idioma detectado: {idioma_orig}")
+            if idioma_orig != 'es':
+                self.logger.info(f"\tTraducción realizada (calidad: {int(calidad*100)}%)")
+            return claim_es, idioma_orig, calidad
+        else:
+            # Sin procesador de idiomas, asumir español
+            return claim_usuario, 'es', 1.0
+
+    @staticmethod
+    def _get_cache_key(claim: str) -> str:
+        """
+        Genera una clave de caché para una afirmación.
+
+        Args:
+            claim: Afirmación normalizada
+
+        Returns:
+            Hash MD5 de la afirmación
+        """
+        normalized = claim.lower().strip()
+        return hashlib.md5(normalized.encode()).hexdigest()
+
+    def _check_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """
+        Verifica si existe un resultado en caché.
+
+        Args:
+            cache_key: Clave de caché
+
+        Returns:
+            Resultado cacheado o None
+        """
+        if self.cache is not None and cache_key in self.cache:
+            self.logger.debug(f"Cache HIT: {cache_key[:8]}...")
+            return self.cache[cache_key].copy()
+        return None
+
+    def _save_to_cache(self, cache_key: str, result: Dict[str, Any]) -> None:
+        """
+        Guarda un resultado en caché.
+
+        Args:
+            cache_key: Clave de caché
+            result: Resultado a guardar
+        """
+        if self.cache is not None:
+            # Gestión de tamaño máximo (FIFO simple)
+            if len(self.cache) >= self.cache_max_size:
+                # Eliminar el primer elemento
+                first_key = next(iter(self.cache))
+                del self.cache[first_key]
+
+            self.cache[cache_key] = result.copy()
+            self.logger.debug(f"Guardado en caché: {cache_key[:8]}...")
+
+    @staticmethod
+    def _check_context_relevance(claim: str, context: str) -> float:
+        """
+        Verifica si el contexto es relevante para la afirmación usando similitud básica.
+        
+        Args:
+            claim: Afirmación a verificar
+            context: Contexto recuperado
+            
+        Returns:
+            Score de relevancia (0.0 a 1.0)
+        """
+        if not context or not claim:
+            return 0.0
+            
+        # Extraer palabras clave de la afirmación (simple)
+        claim_words = set(claim.lower().split())
+        context_lower = context.lower()
+        
+        # Contar cuántas palabras clave aparecen en el contexto
+        matches = sum(1 for word in claim_words if len(word) > 3 and word in context_lower)
+        relevance = matches / max(len([w for w in claim_words if len(w) > 3]), 1)
+        
+        return min(relevance, 1.0)
+
+    @staticmethod
+    def _validate_llm_response(result: Dict[str, Any], claim: str, context: str) -> Dict[str, Any]:
+        """
+        Valida la respuesta del LLM para detectar alucinaciones.
+
+        Verifica que la explicación del LLM sea consistente con el claim.
+        Por ejemplo, si el claim dice "1902" pero la explicación habla de "1950",
+        es una alucinación.
+
+        Args:
+            result: Respuesta del LLM
+            claim: Afirmación original
+            context: Contexto usado
+
+        Returns:
+            Resultado validado (o corregido si es necesario)
+        """
+        import re
+
+        # Extraer explicación
+        explicacion = result.get('explicacion_corta', '')
+
+        # Extraer años del claim y de la explicación
+        claim_years = set(re.findall(r'\b(1[89]\d{2}|20\d{2})\b', claim))
+        expl_years = set(re.findall(r'\b(1[89]\d{2}|20\d{2})\b', explicacion))
+
+        # Si la explicación menciona años que NO están en el claim, es sospechoso
+        extra_years = expl_years - claim_years
+
+        if extra_years and result.get('veredicto') == 'FALSO':
+            # El LLM está comparando con un año que no está en el claim
+            # Esto indica confusión - probablemente debería ser VERDADERO o NO SE PUEDE VERIFICAR
+
+            # Verificar si el año del claim SÍ aparece en el contexto
+            context_years = set(re.findall(r'\b(1[89]\d{2}|20\d{2})\b', context))
+
+            if claim_years and claim_years.intersection(context_years):
+                # El año del claim SÍ está en el contexto → debería ser VERDADERO
+                return {
+                    "veredicto": "VERDADERO",
+                    "nivel_confianza": 4,
+                    "fuente_documento": result.get('fuente_documento', 'Corregido por validación'),
+                    "explicacion_corta": f"La evidencia confirma la información mencionada en la afirmación.",
+                    "evidencia_citada": result.get('evidencia_citada', 'Validado por sistema')
+                }
+
+        # Si no hay problema, devolver el resultado original
+        return result
+
+    def _evaluate_claim(self, claim_es: str, claim_original: str, context: str, translation_quality: float,
+                        metadata_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Evalúa una afirmación usando el LLM.
+
+        Args:
+            claim_es: Afirmación en español
+            claim_original: Afirmación original del usuario
+            context: Contexto recuperado
+            translation_quality: Calidad de la traducción (0-1)
+            metadata_list: Metadatos de documentos recuperados
+
+        Returns:
+            Diccionario con el veredicto y detalles
+        """
+        # Si no hay contexto, no se puede verificar
+        if not context:
+            self.logger.warning("❌ No se encontró contexto relevante")
+            return {
+                "veredicto": "NO SE PUEDE VERIFICAR",
+                "explicacion_corta": "No se encontró información relevante en la base de datos.",
+                "fuente_documento": "Ninguno",
+                "nivel_confianza": 0,
+                "evidencia_citada": "Ninguna"
+            }
+        
+        # NUEVA VALIDACIÓN: Verificar relevancia del contexto
+        relevance_score = self._check_context_relevance(claim_es, context)
+        self.logger.debug(f"Relevancia del contexto: {relevance_score:.2f}")
+
+        if relevance_score < 0.30:  # Umbral más exigente de relevancia
+            self.logger.warning(
+                f"⚠️ Contexto poco relevante (score: {relevance_score:.2f}). Reintentando retrieval sin números...")
+
+            # Fallback genérico: intentar recuperar usando la query sin números/fechas
+            import re as _re
+            claim_topic_only = _re.sub(r"\b\d+\b", " ", claim_es)
+            claim_topic_only = " ".join(claim_topic_only.split())
+
+            new_context, new_metadata = self.retrieve_context(claim_topic_only)
+            if new_context:
+                self.logger.debug("🔁 Fallback: contexto alternativo recuperado para evaluación")
+                context = new_context
+                metadata_list = new_metadata
+            else:
+                self.logger.warning("🔁 Fallback sin resultados. Se devuelve NO SE PUEDE VERIFICAR")
+                return {
+                    "veredicto": "NO SE PUEDE VERIFICAR",
+                    "explicacion_corta": "La evidencia encontrada no trata sobre el tema de la afirmación.",
+                    "fuente_documento": "Ninguno",
+                    "nivel_confianza": 0,
+                    "evidencia_citada": "Ninguna"
+                }
+
+        # Preparar prompt con advertencia de traducción si aplica
+        prompt_claim = claim_es
+        threshold = self.config.get(
+            'language.translation_confidence_threshold',
+            0.6
+        )
+
+        if translation_quality < threshold:
+            self.logger.warning(
+                f"⚠️  Calidad de traducción baja ({int(translation_quality*100)}%)"
+            )
+            prompt_claim += (
+                f" [NOTA: Posible error de traducción. "
+                f"Original: '{claim_original}']"
+            )
+
+        # Reducir contexto antes de LLM para forzar evidencia focalizada
+        reduced_context = self._reduce_context(claim_es, context, max_sentences=12)
+        if reduced_context and len(reduced_context) < len(context):
+            self.logger.debug("✂️ Contexto reducido aplicado para evaluación")
+
+        # Invocar al LLM
+        self.logger.info("Evaluando con LLM...")
+        try:
+            result = self.chain.invoke({
+                "context": reduced_context or context,
+                "claim": prompt_claim
+            })
+
+            # POST-PROCESAMIENTO: Validar respuesta del LLM
+            # Si el LLM da una explicación que menciona fechas/datos que no están en el claim,
+            # es una alucinación y debemos corregir
+            result = self._validate_llm_response(result, claim_es, context)
+
+            # Calcular confianza basada en evidencia
+            if 'nivel_confianza' not in result or result['nivel_confianza'] == 0:
+                result['nivel_confianza'] = self._calculate_confidence(
+                    result.get('veredicto', ''),
+                    context,
+                    metadata_list
+                )
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Error en evaluación con LLM: {e}")
+            return {
+                "error": f"Fallo del modelo: {str(e)}",
+                "veredicto": "ERROR",
+                "nivel_confianza": 0
+            }
+
+    def _translate_response(self, result: Dict[str, Any], target_language: str) -> Dict[str, Any]:
+        """
+        Traduce la respuesta al idioma objetivo.
+
+        Args:
+            result: Resultado en español
+            target_language: Idioma objetivo
+
+        Returns:
+            Resultado traducido
+        """
+        if target_language == 'es' or not self.linguist:
+            return result.copy()
+
+        translated_result = result.copy()
+
+        # Traducir campos de texto
+        if 'explicacion_corta' in translated_result:
+            translated_result['explicacion_corta'] = self.linguist.procesar_salida(
+                translated_result['explicacion_corta'],
+                target_language
+            )
+
+        if 'veredicto' in translated_result:
+            translated_result['veredicto'] = self.linguist.procesar_salida(
+                translated_result['veredicto'],
+                target_language
+            )
+
+        # La evidencia citada NO se traduce para mantener fidelidad
+        self.logger.debug(f"🌍 Respuesta traducida a: {target_language}")
+
+        return translated_result
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Obtiene estadísticas del sistema.
+
+        Returns:
+            Diccionario con estadísticas:
+            - cache_size: Número de elementos en caché
+            - vector_db_docs: Número de documentos en la BD
+            - config: Configuración actual
+        """
+        stats = {
+            'cache_size': len(self.cache) if self.cache else 0,
+            'cache_max_size': self.cache_max_size if self.cache else 0,
+            'vector_db_connected': self.vector_db is not None,
+            'reranker_available': self.reranker is not None,
+            'multilingual_enabled': self.linguist is not None
+        }
+
+        if self.vector_db:
+            try:
+                stats['vector_db_docs'] = self.vector_db._collection.count()
+            except Exception as e:
+                stats['vector_db_docs'] = 'N/A'
+                self.logger.warning(f"Error while {e}")
+
+        return stats

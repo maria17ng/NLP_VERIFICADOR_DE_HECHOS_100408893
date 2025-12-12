@@ -1,0 +1,1 @@
+from language.pipeline_idioma import ProcesadorMultilingue

@@ -1,0 +1,65 @@
+# ============================================================================
+# DEPENDENCIAS DEL VERIFICADOR DE HECHOS
+# ============================================================================
+
+# --- LangChain Core ---
+langchain>=0.1.0
+langchain-community>=0.2.0
+langchain-core>=0.2.0
+langchain-text-splitters>=0.0.1
+
+# --- Embeddings y Transformers ---
+langchain-huggingface>=0.0.3
+langchain-chroma==1.0.0
+langchain-ollama==1.0.0
+sentence-transformers>=2.2.2
+transformers>=4.30.0
+torch>=2.0.0
+# FlagEmbedding para mejores embeddings multilingües (BAAI/bge-m3, etc.)
+FlagEmbedding>=1.2.0
+
+# --- Vector Store ---
+chromadb>=0.4.0
+
+# --- LLM Integrations ---
+# Ollama (local)
+ollama>=0.1.0
+
+# Azure OpenAI (cloud)
+langchain-openai>=0.1.0
+openai>=1.0.0
+
+# --- NLP & Language Processing ---
+fasttext-wheel>=0.9.2
+deep-translator>=1.11.4
+# spaCy para chunking semántico y extracción de entidades (opcional pero recomendado)
+spacy>=3.5.0
+# Descargar modelo después de instalar: python -m spacy download es_core_news_sm
+
+# --- Document Loading & Processing ---
+pypdf>=3.17.0
+pyyaml>=6.0
+pandas>=2.0.0
+
+# --- Data Sources ---
+wikipedia-api>=0.6.0
+
+# --- Evaluation Metrics ---
+bert-score>=0.3.13
+rouge-score>=0.1.2
+scikit-learn>=1.3.0
+
+# --- Utilities ---
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+
+# --- Optional: Web Interface ---
+# streamlit>=1.28.0
+
+# --- Development Tools (opcional) ---
+# jupyter>=1.0.0
+# ipykernel>=6.0.0
+
+python-dotenv==1.2.1
+
+gensim==4.4.0
