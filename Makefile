@@ -25,8 +25,9 @@ help: ## Mostrar esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 	@echo "$(YELLOW)Uso rápido:$(NC)"
-	@echo "  make all              # Ejecutar todo el proyecto (recomendado)"
-	@echo "  make dev              # Desarrollo sin Docker"
+	@echo "  make all              # Ejecutar todo en Docker (Backend + Frontend)"
+	@echo "  make dev              # Desarrollo local sin Docker (hot-reload)"
+	@echo "  make docker-down      # Detener contenedores Docker"
 	@echo ""
 
 venv: ## Crear entorno virtual
@@ -58,9 +59,9 @@ frontend: ## Iniciar servidor frontend (Vite + React)
 	@echo "$(YELLOW)📍 Frontend disponible en: http://localhost:$(FRONTEND_PORT)$(NC)"
 	cd frontend && npm run dev
 
-docker-build: ## Construir imagen Docker
-	@echo "$(BLUE)🐳 Construyendo imagen Docker...$(NC)"
-	$(DOCKER) build -t $(IMAGE_NAME) .
+docker-build: ## Construir imagen Docker (con cache)
+	@echo "$(BLUE)🐳 Construyendo imagen Docker con cache...$(NC)"
+	$(DOCKER) build --cache-from $(IMAGE_NAME):latest -t $(IMAGE_NAME) .
 	@echo "$(GREEN)✅ Imagen Docker construida: $(IMAGE_NAME)$(NC)"
 
 docker-up: docker-build ingest ## Iniciar servicios con Docker Compose
@@ -75,35 +76,60 @@ docker-down: ## Detener servicios Docker
 	$(DOCKER_COMPOSE) down
 	@echo "$(GREEN)✅ Contenedores detenidos$(NC)"
 
-dev: install ingest ## Iniciar desarrollo (sin Docker)
+dev: install ingest ## Desarrollo local sin Docker (con hot-reload)
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
-	@echo "$(GREEN)    Iniciando Sistema de Verificación de Hechos         $(NC)"
+	@echo "$(GREEN)    Modo Desarrollo Local (Sin Docker)                  $(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
 	@echo ""
 	@echo "$(YELLOW)📍 Backend:  http://localhost:$(BACKEND_PORT)$(NC)"
 	@echo "$(YELLOW)📍 Frontend: http://localhost:$(FRONTEND_PORT)$(NC)"
 	@echo ""
-	@echo "$(BLUE)Iniciando servicios...$(NC)"
+	@echo "$(BLUE)🔥 Hot-reload activado para desarrollo$(NC)"
 	@echo "$(YELLOW)⚠️  Presiona Ctrl+C para detener todos los servicios$(NC)"
 	@echo ""
 	cd frontend && npx vite &
 	$(PYTHON) -m uvicorn api.server:app --reload --port $(BACKEND_PORT)
 
 
-all: install ingest ## Ejecutar todo el proyecto (instalar, ingerir e iniciar)
+check-docker: ## Verificar e instalar Docker si es necesario
+	@command -v docker >/dev/null 2>&1 || { \
+		echo "$(YELLOW)⚠️  Docker no está instalado$(NC)"; \
+		echo "$(BLUE)📦 Instalando Docker automáticamente en Ubuntu...$(NC)"; \
+		echo ""; \
+		sudo apt-get update && \
+		sudo apt-get install -y docker.io docker-compose && \
+		sudo systemctl start docker && \
+		sudo systemctl enable docker && \
+		sudo usermod -aG docker $$USER && \
+		echo "" && \
+		echo "$(GREEN)✅ Docker instalado correctamente$(NC)" && \
+		echo "$(YELLOW)⚠️  Necesitas cerrar sesión y volver a entrar para usar Docker sin sudo$(NC)" && \
+		echo "$(YELLOW)⚠️  O ejecuta: newgrp docker$(NC)" && \
+		echo ""; \
+	}
+
+all: check-docker ingest docker-build ## Ejecutar todo en Docker (Backend + Frontend)
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
-	@echo "$(GREEN)    Sistema de Verificación de Hechos - INICIANDO        $(NC)"
+	@echo "$(GREEN)    Sistema de Verificación de Hechos - Docker Mode     $(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
 	@echo ""
-	@echo "$(YELLOW)📍 Backend:  http://localhost:$(BACKEND_PORT)$(NC)"
-	@echo "$(YELLOW)📍 Frontend: http://localhost:$(FRONTEND_PORT)$(NC)"
+	@echo "$(BLUE)🐳 Construyendo y levantando contenedores Docker...$(NC)"
+	$(DOCKER_COMPOSE) up -d --build
 	@echo ""
-	@echo "$(BLUE)🚀 Iniciando backend y frontend...$(NC)"
-	@echo "$(YELLOW)⚠️  Abre http://localhost:$(FRONTEND_PORT) en tu navegador$(NC)"
-	@echo "$(YELLOW)⚠️  Presiona Ctrl+C para detener todos los servicios$(NC)"
+	@echo "$(GREEN)✅ Sistema iniciado correctamente en Docker$(NC)"
 	@echo ""
-	cd frontend && npx vite &
-	$(PYTHON) -m uvicorn api.server:app --reload --port $(BACKEND_PORT)
+	@echo "$(YELLOW)📍 Backend API:  http://localhost:$(BACKEND_PORT)$(NC)"
+	@echo "$(YELLOW)📍 Frontend:     http://localhost:$(FRONTEND_PORT)$(NC)"
+	@echo ""
+	@echo "$(BLUE)🔧 Comandos útiles:$(NC)"
+	@echo "  make docker-down   # Detener contenedores"
+	@echo "  docker ps          # Ver contenedores activos"
+	@echo "  docker logs -f factchecker-backend   # Ver logs del backend"
+	@echo "  docker logs -f factchecker-frontend  # Ver logs del frontend"
+	@echo ""
+	@echo "$(GREEN)🐳 Los servicios están corriendo en contenedores Docker$(NC)"
+	@echo "$(YELLOW)💡 No consumen recursos cuando se detienen con 'make docker-down'$(NC)"
+	@echo ""
 
 
 clean: ## Limpiar archivos temporales y caché

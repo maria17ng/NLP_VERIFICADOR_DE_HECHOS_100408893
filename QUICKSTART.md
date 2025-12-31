@@ -8,6 +8,8 @@ Verificar automáticamente la veracidad de afirmaciones sobre equipos de fútbol
 
 ## 🚀 Ejecución en 1 Comando
 
+### Opción 1: Docker (Recomendado)
+
 ```bash
 make all
 ```
@@ -16,15 +18,30 @@ Luego abre: **http://localhost:5174**
 
 ¡Listo! 🎉
 
----
+**🐳 ¿Qué hace ese comando?**
 
-## 📝 ¿Qué hace ese comando?
+1. Verifica e instala Docker si es necesario (Ubuntu)
+2. Ingiere 11 documentos de Wikipedia a ChromaDB
+3. Construye imágenes Docker (backend + frontend)
+4. Inicia ambos servicios en contenedores
+5. Backend: http://localhost:8000
+6. Frontend: http://localhost:5174
+
+**Detener:** `make docker-down`
+
+### Opción 2: Desarrollo Local (Sin Docker)
+
+```bash
+make dev
+```
+
+**📝 ¿Qué hace ese comando?**
 
 1. Instala dependencias Python y Node.js
 2. Descarga modelo de spaCy para español
 3. Ingiere 11 documentos de Wikipedia a ChromaDB
-4. Inicia backend FastAPI en puerto 8000
-5. Inicia frontend React en puerto 5174
+4. Inicia backend con hot-reload en puerto 8000
+5. Inicia frontend con hot-reload en puerto 5174
 
 ---
 

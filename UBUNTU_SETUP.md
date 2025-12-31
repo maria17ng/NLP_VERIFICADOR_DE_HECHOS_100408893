@@ -2,6 +2,25 @@
 
 ## ⚡ Inicio Rápido
 
+### Opción 1: Docker (Recomendado - Instalación Automática)
+
+```bash
+# Docker se instala automáticamente si no está presente
+make all
+
+# Si aparece error de permisos:
+sudo usermod -aG docker $USER
+newgrp docker
+make all
+```
+
+**Frontend:** http://localhost:5174  
+**Backend:** http://localhost:8000
+
+**Detener:** `make docker-down`
+
+### Opción 2: Desarrollo Local (Requiere Dependencias)
+
 ```bash
 # 1. Instalar dependencias del sistema
 sudo apt update
@@ -11,14 +30,8 @@ sudo apt install -y python3.12 python3.12-venv python3-pip nodejs npm
 python3.12 -m venv .venv
 source .venv/bin/activate
 
-# 3. Instalar dependencias
-make install
-
-# 4. Ingestar datos
-make ingest
-
-# 5. Iniciar sistema completo
-make all
+# 3. Iniciar en modo desarrollo
+make dev
 ```
 
 **Frontend:** http://localhost:5174  

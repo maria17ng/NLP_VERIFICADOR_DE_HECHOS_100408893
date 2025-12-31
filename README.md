@@ -8,15 +8,40 @@
 
 ## 🚀 Inicio Rápido
 
-### Para ejecutar el proyecto completo:
+### Opción 1: Docker (Recomendado - Todo en Contenedores)
 
 ```bash
 make all
 ```
 
-**🐧 Ubuntu 24.04**: Ver [UBUNTU_SETUP.md](UBUNTU_SETUP.md) para troubleshooting detallado.
+**🐳 Docker se instalará automáticamente en Ubuntu 24.04** si no lo tienes.
 
-**IMPORTANTE - Dependencias del Sistema**
+Ese único comando:
+- ✅ Verifica e instala Docker si es necesario
+- ✅ Ingiere los datos a ChromaDB
+- ✅ Construye las imágenes Docker (backend + frontend)
+- ✅ Inicia ambos servicios en contenedores
+- ✅ Backend: http://localhost:8000
+- ✅ Frontend: http://localhost:5174
+
+**Detener los contenedores:**
+```bash
+make docker-down
+```
+
+**Ver logs:**
+```bash
+docker logs -f factchecker-backend
+docker logs -f factchecker-frontend
+```
+
+### Opción 2: Desarrollo Local (Sin Docker)
+
+```bash
+make dev
+```
+
+**IMPORTANTE - Dependencias del Sistema (solo para desarrollo local)**
 
 En Ubuntu/Linux:
 ```bash
@@ -28,27 +53,18 @@ En Windows:
 - Python 3.12: https://www.python.org/downloads/
 - Node.js 18+: https://nodejs.org/
 
-**⚠️ Solución rápida en Ubuntu**: Si `make all` no inicia el frontend (error `vite: Permission denied`):
-```bash
-cd path_al_repositorio/frontend
-chmod +x node_modules/.bin/vite
-npm run dev
-```
-
-Luego abre tu navegador en: **http://localhost:5174** 🌐
-
 Ese único comando:
 - ✅ Instala todas las dependencias (Python + Node.js)
 - ✅ Descarga modelos necesarios (spaCy)
 - ✅ Ingiere los datos a la base vectorial ChromaDB
-- ✅ Inicia el backend en http://localhost:8000
-- ✅ Inicia el frontend en http://localhost:5174
+- ✅ Inicia el backend con hot-reload en http://localhost:8000
+- ✅ Inicia el frontend con hot-reload en http://localhost:5174
 
-**📌 Importante**: El frontend se ejecuta en el puerto **5174** (configurado en Vite). Asegúrate de acceder a esa URL exacta.
+**📌 Importante**: El frontend se ejecuta en el puerto **5174** (configurado en Vite).
 
-**Nota**: Todo lo necesario para ejecutar el proyecto está en `requirements.txt`. El Makefile automatiza todo el proceso de instalación e inicio.
+**🐧 Ubuntu 24.04**: Ver [UBUNTU_SETUP.md](UBUNTU_SETUP.md) para troubleshooting detallado.
 
-### Alternativa en Windows (sin Make):
+### Opción 3: Windows (sin Make)
 
 Ejecuta el script de inicio:
 ```bash

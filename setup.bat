@@ -26,11 +26,15 @@ echo.
 echo [5/5] Setup completado!
 echo.
 echo ===============================================
-echo   Para iniciar el sistema, ejecuta:
+echo   Para iniciar el sistema:
+echo.
+echo   Opcion 1 - Docker (Recomendado):
 echo   make all
+echo.
+echo   Opcion 2 - Desarrollo local:
+echo   make dev
 echo
-echo   O manualmente:
-echo   1. uvicorn api.server:app --reload --port 8000
-echo   2. cd frontend && npm run dev
+echo   Opcion 3 - Manual (Windows):
+echo   start.bat
 echo ===============================================
 pause
