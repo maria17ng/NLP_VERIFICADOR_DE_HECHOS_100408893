@@ -4,7 +4,7 @@ Descompone queries complejas en sub-queries para mejorar retrieval.
 GENÉRICO: Funciona para cualquier tema/dominio.
 """
 import re
-from typing import List
+from typing import List, Set
 
 
 class QueryDecomposer:
@@ -71,10 +71,23 @@ class QueryDecomposer:
         )
         entities.extend(capitalized)
 
-        # Filtrar artículos solos y palabras al inicio de oración
-        entities = [e for e in entities if e.lower() not in ['el', 'la', 'los', 'las', 'un', 'una']]
+        # Filtrar artículos solos y preservar el orden de aparición para evitar resultados no deterministas
+        skip_words = {'el', 'la', 'los', 'las', 'un', 'una'}
+        ordered_entities = []
+        seen: Set[str] = set()
 
-        return list(set(entities))  # Eliminar duplicados
+        for entity in entities:
+            normalized = entity.strip()
+            if not normalized:
+                continue
+            normalized_lower = normalized.lower()
+            if normalized_lower in skip_words:
+                continue
+            if normalized_lower not in seen:
+                ordered_entities.append(normalized)
+                seen.add(normalized_lower)
+
+        return ordered_entities
 
     def extract_action(self, query: str) -> str:
         """

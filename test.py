@@ -1,6 +1,6 @@
 if __name__ == "__main__":
     # ============= RAG TESTING =============
-    # from test_parts.test_rag import main
+    # from test.test_rag import main
     # main()
     # python test.py
 
@@ -10,17 +10,17 @@ if __name__ == "__main__":
     # python test.py --clear
 
     # ============= DB TESTING =============
-    # from test_parts.test_db import main
+    # from test.test_db import main
     # main()
     # python test.py --search "¿Cuando se fundó el real madrid?"
 
     # ============= RETRIEVAL TESTING =============
-    # from test_parts.test_retrieval import main
+    # from test.test_retrieval import main
     # main()
     # python test.py
 
     # ============= VERIFIER TESTING =============
-    from test_parts.test_verifier import test_verifier
+    from test.test_verifier import test_verifier
     """try:
         success = test_verifier()
         exit(0 if success else 1)
@@ -51,3 +51,6 @@ if __name__ == "__main__":
     print(json.dumps(result, indent=2, ensure_ascii=False))"""
 
     # python test.py
+
+    # from baseline.compare_rag_baseline_table import main
+    # main()

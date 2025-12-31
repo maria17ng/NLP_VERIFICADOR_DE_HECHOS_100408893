@@ -28,7 +28,7 @@ def download_articles(topics):
             print(f"✅ Descargando: {title}")
             
             # Limpiamos el título para que sirva como nombre de archivo
-            filename = title.replace(" ", "_").replace("/", "-") + ".txt"
+            filename = title.replace(" ", "_").replace("/", "-").replace(':', '-') + ".txt"
             filepath = os.path.join(DATA_PATH, filename)
             
             # Guardamos el texto completo
@@ -43,7 +43,13 @@ if __name__ == "__main__":
     # LISTA DE TEMAS: Añade aquí lo que quieras que tu sistema "sepa".
     # Para probar verificación de hechos, necesitas temas controvertidos o científicos.
     temas_a_descargar = [
-        "Real Madrid Club de Fútbol",
+        "Historia del Real Madrid Club de Fútbol",
+        "Historia del Club Atlético de Madrid",
+        "Anexo:Historia del Club Deportivo Leganés",
+        "Anexo:Trayectoria del Getafe Club de Fútbol",
+        "Rayo Vallecano de Madrid",
+        "Anexo:Palmarés del Real Madrid Club de Fútbol",
+        "Anexo:Palmarés del Club Atlético de Madrid"
     ]
     
     download_articles(temas_a_descargar)

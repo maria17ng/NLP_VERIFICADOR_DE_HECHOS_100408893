@@ -1,4 +1,5 @@
 import os
+import unicodedata
 from typing import List, Dict, Any, Tuple, Optional
 
 from langchain_core.documents import Document
@@ -24,6 +25,46 @@ class AdvancedRetriever:
     5. Diversificación de fuentes
     6. Aplicación de thresholds de relevancia
     """
+
+    TEAM_ALIASES = {
+        'real madrid': {
+            'real madrid',
+            'real madrid club de futbol'
+        },
+        'atletico de madrid': {
+            'club atletico de madrid',
+            'atletico de madrid',
+            'atletico madrid'
+        },
+        'getafe': {
+            'getafe cf',
+            'getafe club de futbol',
+            'getafe'
+        },
+        'leganes': {
+            'club deportivo leganes',
+            'cd leganes',
+            'leganes'
+        },
+        'rayo vallecano': {
+            'rayo vallecano',
+            'rayo vallecano de madrid'
+        },
+        'barcelona': {
+            'fc barcelona',
+            'barcelona'
+        },
+        'sevilla': {
+            'sevilla fc',
+            'sevilla'
+        },
+        'valencia': {
+            'valencia cf',
+            'valencia'
+        }
+    }
+
+    TEAM_FIELDS = ('team', 'club', 'equipo', 'nombre_equipo')
 
     def __init__(self, vector_db: Chroma, reranker: Optional[CrossEncoder] = None,
                  config: Optional[RetrievalConfig] = None):
@@ -73,6 +114,60 @@ class AdvancedRetriever:
         normalized = ' '.join(query.split())
         # NO eliminamos años - son críticos para fact-checking
         return normalized
+
+    @staticmethod
+    def _normalize_team_text(text: str) -> str:
+        normalized = unicodedata.normalize('NFKD', text)
+        normalized = ''.join(ch for ch in normalized if not unicodedata.combining(ch))
+        normalized = normalized.lower().replace('.', ' ')
+        return ' '.join(normalized.split())
+
+    @classmethod
+    def _canonical_team(cls, text: str) -> Optional[str]:
+        normalized = cls._normalize_team_text(text)
+        for canonical, aliases in cls.TEAM_ALIASES.items():
+            if any(alias in normalized for alias in aliases):
+                return canonical
+        return None
+
+    def _detect_team_from_claim(self, claim: str) -> Optional[str]:
+        return self._canonical_team(claim)
+
+    def _extract_doc_team(self, doc: Document) -> Optional[str]:
+        for field in self.TEAM_FIELDS:
+            value = doc.metadata.get(field)
+            if value:
+                canonical = self._canonical_team(str(value))
+                if canonical:
+                    return canonical
+
+        title = doc.metadata.get('title')
+        if title:
+            return self._canonical_team(str(title))
+        return None
+
+    def _apply_team_preference(self, claim_team: str,
+                               scored_docs: List[Tuple[Document, float]],
+                               boost: float) -> List[Tuple[Document, float]]:
+        if not scored_docs or not boost:
+            return scored_docs
+
+        matching: List[Tuple[Document, float]] = []
+        others: List[Tuple[Document, float]] = []
+
+        for doc, score in scored_docs:
+            doc_team = self._extract_doc_team(doc)
+            if doc_team == claim_team:
+                matching.append((doc, score + boost))
+            else:
+                others.append((doc, score))
+
+        if not matching:
+            return scored_docs
+
+        matching.sort(key=lambda x: x[1], reverse=True)
+        others.sort(key=lambda x: x[1], reverse=True)
+        return matching + others
 
     @staticmethod
     def _expand_query(query: str) -> List[str]:
@@ -242,6 +337,7 @@ class AdvancedRetriever:
             - Lista de scores (si return_scores=True)
         """
         self.logger.info(f"Iniciando recuperación avanzada para: '{query[:60]}...'")
+        claim_team = self._detect_team_from_claim(query)
 
         # === FASE 0: Query Decomposition ===
         # Descomponer query en sub-queries (sin fecha, con fecha, keywords)
@@ -326,6 +422,9 @@ class AdvancedRetriever:
             final_score = hybrid_score + boost
             combined_scored.append((doc, final_score))
 
+        if claim_team:
+            combined_scored = self._apply_team_preference(claim_team, combined_scored, self.config.team_preference_boost)
+
         # === FASE 4: Reranking ===
         # IMPORTANTE: Usar query ORIGINAL para reranking
         if self.config.use_reranker and self.reranker:
@@ -375,6 +474,9 @@ class AdvancedRetriever:
         else:
             self.logger.debug("[4/6] Reranking deshabilitado, usando scores híbridos")
             scored_docs = combined_scored
+
+        if claim_team:
+            scored_docs = self._apply_team_preference(claim_team, scored_docs, self.config.team_preference_boost / 2)
 
         # === FASE 5: Threshold de Relevancia ===
         self.logger.debug(f"[5/6] Aplicando threshold mínimo ({self.config.min_relevance_score})")

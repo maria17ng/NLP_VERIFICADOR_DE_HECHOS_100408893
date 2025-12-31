@@ -16,7 +16,7 @@ models:
   # Modelo de Language Model (Ollama)
   llm:
     name: "llama3.2"
-    temperature: 0.1  # Bajo para respuestas consistentes y menos creativas
+    temperature: 0.0  # Bajo para respuestas consistentes y menos creativas
     format: "json"
     keep_alive: "5m"
     # Para usar modelos de UC3M, descomentar:
@@ -26,17 +26,29 @@ models:
   # OpenAI
   openai:
     enabled: true
-    api_key: os.getenv("OPENAI_KEY")
-    temperature: 0.3
-    max_tokens: 800
+    model: "gpt-4o-mini"
+    temperature: 0.0
+    max_tokens: 2000
 
 
-    # Modelo de Embeddings
+  # Modelo de Embeddings
   embeddings:
+    provider: "openai"  # Opciones: "openai" (recomendado) o "huggingface"
+
+    # OpenAI embeddings (usar si provider="openai")
+    openai_model: "text-embedding-3-small"  # Opciones: text-embedding-3-small (1536 dim, $0.02/1M tokens)
+    #           text-embedding-3-large (3072 dim, $0.13/1M tokens)
+    # VENTAJAS OpenAI:
+    # - Mejor comprensión de contexto numérico (fechas, estadísticas)
+    # - Entrenado con billones de tokens de calidad
+    # - MUY BARATO: ~$0.01 para 1589 docs (1 sola vez)
+    # - Mejor para detectar contradicciones (1902 vs 1903)
+
+    # HuggingFace embeddings (usar si provider="huggingface")
     name: "BAAI/bge-m3"
     # UPGRADE: Mejor modelo multilingüe (1024 dim, híbrido denso+sparse)
     # Benchmarks: +10-15% mejor Hit Rate vs paraphrase-multilingual-MiniLM
-    # Ventajas: No requiere trust_remote_code, mejor compatibilidad
+    # Ventajas: Gratuito, local, no requiere trust_remote_code
     # Alternativas probadas:
     # - "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" (ANTIGUO - 384 dim)
     # - "Alibaba-NLP/gte-multilingual-base" (768 dim, requiere trust_remote_code)
@@ -57,7 +69,7 @@ models:
 rag:
   # Búsqueda vectorial
   similarity_search:
-    k: 80  # Documentos iniciales a recuperar
+    k: 200  # Documentos iniciales a recuperar
 
   # Reranking
   reranking:
@@ -131,7 +143,7 @@ rag:
 
     # Diversificación de fuentes
     use_diversity: true
-    max_chunks_per_source: 3  # Máximo chunks del mismo documento fuente - AUMENTADO
+    max_chunks_per_source: 8  # Máximo chunks del mismo documento fuente - AUMENTADO
     diversity_penalty: 0.15  # Penalización por repetición de fuente
 
     # Thresholds de relevancia (REDUCIDOS para permitir más documentos)
@@ -162,6 +174,11 @@ logging:
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   file_enabled: true
   console_enabled: true
+
+# --- MODO DETERMINISTA ---
+deterministic_mode:
+  enabled: true
+  seed: 42
 
 # --- EVALUACIÓN ---
 evaluation:

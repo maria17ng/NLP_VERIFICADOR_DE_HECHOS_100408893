@@ -15,6 +15,7 @@ class RetrievalConfig:
     # Búsqueda híbrida
     use_hybrid_search: bool = True
     keyword_weight: float = 0.3  # Peso de keyword matching (0-1)
+    team_preference_boost: float = 0.2 # Boost para priorizar documentos del mismo equipo
 
     # Reranking
     use_reranker: bool = True

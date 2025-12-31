@@ -25,6 +25,7 @@ venv/
 env/
 ENV/
 .venv
+venv
 
 # IDE
 .vscode/
@@ -40,6 +41,7 @@ data/raw/*.txt
 data/raw/*.pdf
 *.db
 *.sqlite
+md/
 
 # Logs
 logs/
@@ -50,7 +52,6 @@ logs/
 *.bin
 
 # Evaluation results
-evaluations/
 results/
 
 # Environment variables

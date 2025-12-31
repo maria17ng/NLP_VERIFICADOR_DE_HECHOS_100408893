@@ -1,13 +1,15 @@
 import os
+import re
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 from tqdm import tqdm
 
 from langchain_community.document_loaders import TextLoader, DirectoryLoader, PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_core.documents import Document
 
 # Importaciones locales
@@ -18,6 +20,101 @@ from chunker.hybrid_chunker import HybridChunker
 from chunker.section_aware import SectionAwareChunker
 from extractor import MetadataExtractor, ChunkMetadataEnricher, FactMetadataExtractor, TopicExtractor
 from hyde import HyDEGenerator, HyDEAugmenter, SimpleHyDEGenerator
+
+from dotenv import load_dotenv
+dotenv_path = Path('settings/.env')
+load_dotenv(dotenv_path=dotenv_path)
+
+TEAM_THEME_PATTERNS = (
+    {
+        "label": "REAL_MADRID",
+        "keywords": (
+            "real madrid",
+            "merengue",
+            "madridista",
+            "bernabéu",
+            "bernabeu",
+            "santiago bernabéu",
+            "santiago bernabeu"
+        ),
+        "regex": (
+            r"[^\.\!?]*(?:santiago\s+bernab[eé]u|bernabeu)[^\.\!?]*",
+            r"[^\.\!?]*(?:merengue|madridistas?)[^\.\!?]*",
+            r"[^\.\!?]*(?:camiseta|uniforme).{0,80}?blanc[oa][^\.\!?]*"
+        )
+    },
+    {
+        "label": "ATLETICO",
+        "keywords": (
+            "atlético",
+            "atletico",
+            "atlético de madrid",
+            "atletico de madrid",
+            "atleti",
+            "colchonero",
+            "colchoneros",
+            "rojiblanco",
+            "rojiblancos",
+            "metropolitano",
+            "cívitas",
+            "wanda"
+        ),
+        "regex": (
+            r"[^\.\!?]*(?:c[ií]vitas\s+metropolitano|wanda\s+metropolitano|metropolitano)[^\.\!?]*",
+            r"[^\.\!?]*(?:rojiblanc[ao]s?|colchoneros?)[^\.\!?]*",
+            r"[^\.\!?]*franja\s+rojiblanca[^\.\!?]*"
+        )
+    },
+    {
+        "label": "GETAFE",
+        "keywords": (
+            "getafe",
+            "getafe cf",
+            "azulón",
+            "azulon",
+            "azulones",
+            "coliseum",
+            "alfonso pérez",
+            "alfonso perez"
+        ),
+        "regex": (
+            r"[^\.\!?]*(?:coliseum|alfonso\s+p[eé]rez)[^\.\!?]*",
+            r"[^\.\!?]*(?:azul[oó]n(?:es)?)[^\.\!?]*"
+        )
+    },
+    {
+        "label": "LEGANES",
+        "keywords": (
+            "leganés",
+            "leganes",
+            "cd leganés",
+            "cd leganes",
+            "pepiner",
+            "butarque"
+        ),
+        "regex": (
+            r"[^\.\!?]*(?:butarque)[^\.\!?]*",
+            r"[^\.\!?]*(?:pepiner[oa]s?)[^\.\!?]*",
+            r"[^\.\!?]*(?:franjas?\s+verdes?|verde\s+y\s+blanco)[^\.\!?]*"
+        )
+    },
+    {
+        "label": "RAYO",
+        "keywords": (
+            "rayo",
+            "rayo vallecano",
+            "rayista",
+            "vallecano",
+            "vallecas",
+            "franja roja"
+        ),
+        "regex": (
+            r"[^\.\!?]*(?:vallecas)[^\.\!?]*",
+            r"[^\.\!?]*franja\s+roja[^\.\!?]*",
+            r"[^\.\!?]*(?:rayistas?)[^\.\!?]*"
+        )
+    }
+)
 
 
 class DocumentIngester:
@@ -74,13 +171,33 @@ class DocumentIngester:
     def _init_embeddings(self) -> None:
         """Inicializa el modelo de embeddings."""
         try:
-            model_name = self.config.get('models.embeddings.name')
-            self.logger.info(f"Cargando modelo de embeddings: {model_name}")
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name=model_name,
-                model_kwargs={'trust_remote_code': True}  # Soporte para modelos con código personalizado
-            )
-            self.logger.info("✅ Embeddings cargados correctamente")
+            # Verificar si usar OpenAI o HuggingFace
+            provider = self.config.get('models.embeddings.provider', 'huggingface')
+
+            if provider == 'openai':
+                # Usar OpenAI embeddings
+                api_key = self.config.get('models.openai.api_key') or os.getenv('OPENAI_KEY')
+                if not api_key:
+                    self.logger.warning("⚠️  OpenAI API key no encontrada, usando HuggingFace como fallback")
+                    provider = 'huggingface'
+                else:
+                    model_name = self.config.get('models.embeddings.openai_model', 'text-embedding-3-small')
+                    self.logger.info(f"Cargando OpenAI embeddings: {model_name}")
+                    self.embeddings = OpenAIEmbeddings(
+                        model=model_name,
+                        openai_api_key=api_key
+                    )
+                    self.logger.info("✅ OpenAI embeddings cargados correctamente")
+                    self.logger.info(f"   Modelo: {model_name}")
+                    self.logger.info(f"   Dimensiones: 1536 (text-embedding-3-small) o 3072 (large)")
+                    return
+
+            # Fallback o default: HuggingFace
+            if provider == 'huggingface':
+                model_name = self.config.get('models.embeddings.name')
+                self.logger.info(f"Cargando HuggingFace embeddings: {model_name}")
+                self.embeddings = HuggingFaceEmbeddings(model_name=model_name)
+                self.logger.info("✅ HuggingFace embeddings cargados correctamente")
         except Exception as e:
             self.logger.error(f"❌ Error cargando embeddings: {e}")
             raise
@@ -371,7 +488,11 @@ class DocumentIngester:
         # 2. Extracción de metadatos a nivel documento
         if self.metadata_extractor:
             self.logger.info("\tExtrayendo metadatos de documentos...")
-            documents = [self.metadata_extractor.extract_metadata(doc) for doc in tqdm(documents, desc="Extrayendo metadatos")]
+            documents = [self.metadata_extractor.extract_metadata(doc) for doc in
+                         tqdm(documents, desc="Extrayendo metadatos")]
+
+        # 2.5 Refuerzo de frases con hechos clave (fundación, palmarés, colores, estadios)
+        documents = self._boost_fact_sentences(documents)
 
         # 3. Chunking
         self.logger.info("\tFragmentando documentos...")
@@ -418,9 +539,155 @@ class DocumentIngester:
 
         return enriched_chunks
 
+    def _boost_fact_sentences(self, documents: List[Document]) -> List[Document]:
+        """Duplica frases con hechos clave o numéricos para mejorar el recall lexical."""
+
+        if not documents:
+            return documents
+
+        fact_patterns = [
+            r"[^\.?!]*fundad[oa].{0,80}\b(1[89]\d{2}|20\d{2})[^\.?!]*",
+            r"[^\.?!]*gan[óa].{0,80}(liga|champions|copa)[^\.?!]*",
+            r"[^\.?!]*(colores?|camiseta|uniforme).{0,40}(verde|blanco|rojo|azul|franja|verdiblanco)[^\.?!]*",
+            r"[^\.?!]*juega.{0,40}(estadio|campo).{0,40}(bernabéu|metropolitano|butarque|cerro|anoeta|camp nou|mestalla)[^\.?!]*",
+        ]
+
+        numeric_keywords = (
+            'liga', 'ligas', 'copa', 'copas', 'titulo', 'título', 'titulos', 'títulos',
+            'victoria', 'victorias', 'goles', 'puntos', 'temporada', 'temporadas',
+            'años', 'ano', 'años', 'fundado', 'fundación', 'fundada', 'ganó', 'gano',
+            'partidos', 'puesto', 'clasificación', 'historia', 'record', 'récord'
+        )
+
+        max_fact_highlights = 8
+        max_numeric_highlights = 6
+        max_thematic_highlights = 6
+
+        def extract_pattern_matches(text: str) -> List[str]:
+            matches: List[str] = []
+            for pattern in fact_patterns:
+                for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                    sentence = match.group(0).strip()
+                    if sentence and sentence not in matches:
+                        matches.append(sentence)
+            return matches
+
+        def extract_thematic_sentences(text: str) -> List[str]:
+            if not text:
+                return []
+
+            matches: List[str] = []
+            seen: Set[str] = set()
+            text_lower = text.lower()
+
+            for theme in TEAM_THEME_PATTERNS:
+                keywords = theme.get('keywords', ())
+                if keywords and not any(keyword in text_lower for keyword in keywords):
+                    continue
+
+                for pattern in theme.get('regex', ()):  # type: ignore[arg-type]
+                    for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                        snippet = match.group(0).strip()
+                        if not snippet:
+                            continue
+
+                        normalized = re.sub(r'\s+', ' ', snippet)
+                        if normalized in seen:
+                            continue
+
+                        seen.add(normalized)
+                        matches.append(snippet)
+
+                        if len(matches) >= max_thematic_highlights:
+                            return matches
+
+            return matches
+
+        def extract_numeric_sentences(text: str) -> List[str]:
+            sentences = re.split(r'(?<=[\.?!])\s+', text)
+            results: List[str] = []
+            seen = set()
+
+            for sentence in sentences:
+                snippet = sentence.strip()
+                if not snippet or len(snippet) > 280:
+                    continue
+                if not re.search(r'\d', snippet):
+                    continue
+                lower = snippet.lower()
+                if not any(keyword in lower for keyword in numeric_keywords):
+                    continue
+
+                normalized = re.sub(r'\s+', ' ', snippet)
+                if normalized in seen:
+                    continue
+
+                seen.add(normalized)
+                results.append(normalized)
+
+                if len(results) >= max_numeric_highlights:
+                    break
+
+            return results
+
+        boosted_docs: List[Document] = []
+        changed = False
+
+        for doc in documents:
+            text = doc.page_content
+            highlights = extract_pattern_matches(text)
+            numeric_highlights = extract_numeric_sentences(text)
+            thematic_highlights = extract_thematic_sentences(text)
+
+            prefix_parts: List[str] = []
+
+            if highlights:
+                prefix_parts.extend(
+                    f"HECHO_CLAVE: {s}" for s in highlights[:max_fact_highlights]
+                )
+
+            if numeric_highlights:
+                prefix_parts.extend(
+                    f"HECHO_NUMERICO: {s}" for s in numeric_highlights[:max_numeric_highlights]
+                )
+
+                # Registrar los números detectados para que el filtro de metadata pueda usarlos
+                digits = set(re.findall(r'\d+', " ".join(numeric_highlights)))
+                if digits:
+                    existing_numeric = set(
+                        str(value) for value in (doc.metadata.get('numeric_facts') or [])
+                    )
+                    existing_numbers = set(
+                        str(value) for value in (doc.metadata.get('numbers') or [])
+                    )
+                    existing_numeric.update(digits)
+                    existing_numbers.update(digits)
+                    doc.metadata['numeric_facts'] = sorted(existing_numeric)
+                    doc.metadata['numbers'] = sorted(existing_numbers)
+
+            if thematic_highlights:
+                prefix_parts.extend(
+                    f"TEMA_EQUIPO: {s}" for s in thematic_highlights[:max_thematic_highlights]
+                )
+
+            if prefix_parts:
+                prefix = "\n".join(prefix_parts)
+                new_text = f"{prefix}\n{text}"
+                boosted_docs.append(Document(page_content=new_text, metadata=doc.metadata))
+                changed = True
+            else:
+                boosted_docs.append(doc)
+
+        if changed:
+            self.logger.debug(
+                "\tRefuerzo aplicado a documentos con hechos clave y numéricos"
+            )
+
+        return boosted_docs
+
     def _add_location_metadata(
-        self,
-        chunks: List[Document]
+            self,
+            chunks: List[Document]
     ) -> List[Document]:
         """
         Añade metadatos de ubicación a los fragmentos.
@@ -451,30 +718,27 @@ class DocumentIngester:
             is_pdf = 'page' in doc_list[0].metadata
 
             if is_pdf:
-                # Para PDFs, añadir información del total y section_number basado en la página
+                # Para PDFs, solo añadir información del total
                 for doc in doc_list:
                     doc.metadata['total_pages'] = max(
                         d.metadata.get('page', 0) for d in doc_list
                     ) + 1
-                    # section_number = numero de página + 1 (para que empiece por 1)
-                    doc.metadata['section_number'] = doc.metadata.get('page', 0) + 1
                     enriched_chunks.append(doc)
             else:
-                # Para TXT, añadir chunk_id y section_number
+                # Para TXT, añadir chunk_id
                 total_chunks = len(doc_list)
                 for i, doc in enumerate(doc_list, 1):
                     doc.metadata['chunk_id'] = i
-                    doc.metadata['section_number'] = i
                     doc.metadata['total_chunks_in_file'] = total_chunks
                     enriched_chunks.append(doc)
 
         return enriched_chunks
 
     def ingest(
-        self,
-        data_path: str = None,
-        db_path: str = None,
-        clear_existing: bool = False
+            self,
+            data_path: str = None,
+            db_path: str = None,
+            clear_existing: bool = False
     ) -> Chroma:
         """
         Ejecuta el proceso completo de ingesta.
@@ -651,6 +915,7 @@ class DocumentIngester:
             chunk.metadata = metadata
 
         return chunks
+
 
 def main():
     """Función principal para ejecutar la ingesta."""

@@ -41,7 +41,8 @@ class MetadataFilter:
         entities = {
             'dates': set(),
             'numbers': set(),
-            'keywords': set()
+            'keywords': set(),
+            'has_proper_keyword': False
         }
 
         # Extraer fechas (años, fechas completas)
@@ -60,11 +61,40 @@ class MetadataFilter:
         numbers = re.finditer(number_pattern, claim)
         entities['numbers'].update(m.group() for m in numbers)
 
-        # Keywords significativas (palabras con mayúsculas, > 4 chars)
-        words = claim.split()
-        keywords = [w.strip('.,!?;:') for w in words
-                    if len(w) > 4 and not w.lower() in {'donde', 'cuando', 'quien', 'cual', 'como'}]
-        entities['keywords'] = set(keywords)
+        # Keywords significativas y frases compuestas
+        raw_tokens = re.findall(r"\b[\wÁÉÍÓÚÜÑáéíóúñ']+\b", claim)
+        stopwords = {'donde', 'cuando', 'quien', 'cual', 'como', 'que', 'cuales'}
+        connectors = {'de', 'del', 'la', 'el', 'los', 'las', 'cf', 'club'}
+
+        keywords: Set[str] = set()
+        phrase_buffer: List[str] = []
+
+        def flush_phrase() -> None:
+            if len(phrase_buffer) >= 2:
+                keywords.add(' '.join(phrase_buffer))
+
+        for token in raw_tokens:
+            cleaned = token.strip(".,!?;:'\"()-")
+            if not cleaned:
+                continue
+
+            lower = cleaned.lower()
+            is_proper = cleaned[:1].isupper()
+
+            if (len(lower) >= 3 and lower not in stopwords) or is_proper:
+                keywords.add(lower)
+                if is_proper:
+                    entities['has_proper_keyword'] = True
+
+            if is_proper or (phrase_buffer and lower in connectors):
+                phrase_buffer.append(lower)
+            else:
+                flush_phrase()
+                phrase_buffer = [lower] if is_proper else []
+
+        flush_phrase()
+
+        entities['keywords'] = keywords
 
         return entities
 
@@ -108,6 +138,23 @@ class MetadataFilter:
                 score += keyword_score * 0.3
                 factors += 1
 
+        # 2b. Coincidencia de números / estadísticas
+        if claim_entities['numbers']:
+            doc_numbers: Set[str] = set()
+            if 'numbers' in doc_metadata and doc_metadata['numbers']:
+                doc_numbers.update(str(n).lower() for n in doc_metadata['numbers'])
+            elif 'numeric_facts' in doc_metadata and doc_metadata['numeric_facts']:
+                doc_numbers.update(str(n).lower() for n in doc_metadata['numeric_facts'])
+
+            if not doc_numbers and 'keywords' in doc_metadata:
+                doc_numbers_str = str(doc_metadata['keywords']).lower()
+                doc_numbers.update(re.findall(r"\b\d+\b", doc_numbers_str))
+
+            number_matches = claim_entities['numbers'].intersection(doc_numbers)
+            if number_matches:
+                score += 0.3
+                factors += 1
+
         # 3. Coincidencia de entidades (personas, organizaciones)
         entity_fields = ['persons', 'organizations', 'locations']
         for field in entity_fields:
@@ -127,7 +174,7 @@ class MetadataFilter:
             if claim_entities['dates'] and content_type == 'historical':
                 score += 0.1
                 factors += 1
-            elif any(kw[0].isupper() for kw in claim_entities['keywords']) and content_type == 'biographical':
+            elif claim_entities.get('has_proper_keyword') and content_type == 'biographical':
                 score += 0.1
                 factors += 1
 
