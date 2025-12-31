@@ -5,8 +5,8 @@ if __name__ == "__main__":
     # python test.py
 
     # ============= INGEST_DATA TESTING =============
-    from ingest.ingest_data import main
-    main()
+    # from ingest.ingest_data import main
+    # main()
     # python test.py --clear
 
     # ============= DB TESTING =============
@@ -20,7 +20,7 @@ if __name__ == "__main__":
     # python test.py
 
     # ============= VERIFIER TESTING =============
-    from test.test_verifier import test_verifier
+    # from test.test_verifier import test_verifier
     """try:
         success = test_verifier()
         exit(0 if success else 1)
@@ -54,3 +54,6 @@ if __name__ == "__main__":
 
     # from baseline.compare_rag_baseline_table import main
     # main()
+
+    from test.test_multibilingual import test_multilingual
+    test_multilingual()
